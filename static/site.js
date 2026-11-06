@@ -30,7 +30,9 @@
   /* ---------------- Courses ---------------- */
   function renderFilters() {
     const wrap = $("#course-filters");
-    const tabs = [{ key: "all", label: "All" }, ...categories];
+    // only show categories that currently have a published course
+    const used = new Set(courses.map((c) => c.category));
+    const tabs = [{ key: "all", label: "All" }, ...categories.filter((c) => used.has(c.key))];
     wrap.innerHTML = tabs.map((c) => {
       const on = c.key === activeCategory;
       return `<button role="tab" aria-selected="${on}" data-category="${esc(c.key)}"
@@ -41,7 +43,7 @@
   }
 
   function setCategory(key) {
-    activeCategory = key;
+    activeCategory = courses.some((c) => c.category === key) ? key : "all";
     renderFilters();
     renderCourses();
   }

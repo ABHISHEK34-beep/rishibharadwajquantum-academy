@@ -118,14 +118,7 @@ CATEGORY_KEYS = {c[0] for c in CATEGORIES}
 
 # (title, audience, description, topics, icon, category)
 SEED_COURSES = [
-    # --- A. School-Level Physics
-    ("Classes 9-10 Physics Fundamentals", "Classes 9-10",
-     "Build a strong base in school physics through concept-based learning, practical demonstrations and simple experiments.",
-     "Motion, Force & Energy\nLight, Sound & Electricity\nPractical Demonstrations & Experiments\nConcept-Based Problem Solving", "fa-school", "school"),
-    ("Classes 11-12 Physics", "Classes 11-12",
-     "Concept-first physics for senior secondary students, connecting board syllabus topics with experiments and real applications.",
-     "Mechanics & Thermodynamics\nElectricity & Magnetism\nOptics & Modern Physics\nPractical Demonstrations & Experiments", "fa-book-open", "school"),
-    # --- B. NEET & JEE Physics Preparation
+    # --- NEET & JEE Physics Preparation
     ("Classes 11-12 JEE & NEET Physics", "Classes 11-12, NEET & JEE aspirants",
      "A combined Class 11-12 physics programme for students preparing for NEET and JEE, covering the full syllabus with concept building, numerical practice, PYQs and regular tests.",
      "Class 11 Physics (Mechanics, Thermodynamics, Waves)\nClass 12 Physics (Electromagnetism, Optics, Modern Physics)\nChapter-wise Concept Building\nNumerical Problem-Solving\nPrevious-Year Questions (PYQs)\nPractice & Mock Tests\nDoubt-Clearing Sessions", "fa-atom", "neet-jee"),
