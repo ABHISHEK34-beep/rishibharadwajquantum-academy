@@ -149,11 +149,11 @@ async function viewMessages() {
   const list = await api('/api/admin/messages');
   $('#panel').innerHTML = `<div class="flex justify-between items-center mb-4"><h2 class="text-lg font-semibold text-white">Contact messages</h2>
     <a class="btn btn-sec" href="/api/admin/export/messages"><i class="fa-solid fa-download mr-1"></i>Export CSV</a></div>` +
-    (list.length ? table(['Received (UTC)', 'From', 'Interest', 'Message', ''], list.map(m => `
+    (list.length ? table(['Received (UTC)', 'From', 'Interest / Class / Mode', 'Message', ''], list.map(m => `
       <tr class="${m.is_read ? 'opacity-70' : ''}">
         <td class="whitespace-nowrap">${!m.is_read ? '<span class="inline-block w-2 h-2 rounded-full bg-cyan-300 mr-2"></span>' : ''}${esc(fmt(m.created_at))}</td>
         <td><div class="font-medium text-white">${esc(m.name)}</div><a class="accent" href="mailto:${esc(m.email)}">${esc(m.email)}</a>${m.phone ? `<div class="text-slate-400">${esc(m.phone)}</div>` : ''}</td>
-        <td>${esc(m.interest || '-')}</td>
+        <td>${esc(m.interest || '-')}${m.class_course ? `<div class="text-slate-400">${esc(m.class_course)}</div>` : ''}${m.learning_mode ? `<div class="text-slate-400">${esc(m.learning_mode)}</div>` : ''}</td>
         <td class="max-w-md whitespace-pre-wrap break-words">${esc(m.message)}</td>
         <td class="whitespace-nowrap space-x-2">
           <button class="btn btn-sec" onclick="toggleRead(${m.id}, ${!m.is_read})">${m.is_read ? 'Mark unread' : 'Mark read'}</button>
@@ -183,21 +183,28 @@ async function delItem(kind, id) {
 
 /* ---------- courses ---------- */
 let courseCache = [];
+const CATEGORY_LABELS = {
+  'school': 'School-Level Physics', 'neet-jee': 'NEET & JEE Physics', 'practical': 'Practical Physics & Experiments',
+  'quantum': 'Quantum Technology', 'rf': 'RF, Microwave & Electronics',
+};
 async function viewCourses() {
   courseCache = await api('/api/admin/courses');
   $('#panel').innerHTML = `<div class="flex justify-between items-center mb-4"><h2 class="text-lg font-semibold text-white">Courses</h2>
     <button class="btn btn-pri" onclick="editCourse()"><i class="fa-solid fa-plus mr-1"></i>Add course</button></div>` +
-    (courseCache.length ? table(['Order', 'Title', 'Audience', 'Status', ''], courseCache.map(c => `
+    (courseCache.length ? table(['Order', 'Title', 'Category', 'Audience', 'Status', ''], courseCache.map(c => `
       <tr><td>${c.sort_order}</td><td><i class="fa-solid ${esc(c.icon)} accent mr-2"></i><span class="font-medium text-white">${esc(c.title)}</span></td>
+        <td>${esc(CATEGORY_LABELS[c.category] || c.category)}</td>
         <td>${esc(c.audience)}</td><td>${c.published ? '<span class="text-emerald-300">Published</span>' : '<span class="text-slate-400">Hidden</span>'}</td>
         <td class="whitespace-nowrap space-x-2"><button class="btn btn-sec" onclick="editCourse(${c.id})">Edit</button>
           <button class="btn btn-del" onclick="delItem('courses', ${c.id})">Delete</button></td></tr>`).join('')) : empty('No courses yet.'));
 }
 function editCourse(id) {
-  const c = courseCache.find(x => x.id === id) || { title:'', audience:'', description:'', topics_text:'', icon:'fa-atom', sort_order: courseCache.length, published:true };
+  const c = courseCache.find(x => x.id === id) || { title:'', audience:'', description:'', topics_text:'', icon:'fa-atom', category:'quantum', sort_order: courseCache.length, published:true };
+  const catOpts = Object.entries(CATEGORY_LABELS).map(([k, l]) => `<option value="${k}" ${k === c.category ? 'selected' : ''}>${esc(l)}</option>`).join('');
   openModal(`<h3 class="text-lg font-bold text-white mb-4">${id ? 'Edit' : 'Add'} course</h3>
     <form id="ef" class="space-y-3">
       <div><label class="text-sm">Title *</label><input name="title" class="inp" required value="${esc(c.title)}"></div>
+      <div><label class="text-sm">Category (which tab it appears under)</label><select name="category" class="inp">${catOpts}</select></div>
       <div><label class="text-sm">Audience / level</label><input name="audience" class="inp" value="${esc(c.audience)}"></div>
       <div><label class="text-sm">Description</label><textarea name="description" rows="3" class="inp">${esc(c.description)}</textarea></div>
       <div><label class="text-sm">Topics (one per line; first 3 show on the card)</label><textarea name="topics_text" rows="4" class="inp">${esc(c.topics_text)}</textarea></div>
@@ -256,14 +263,28 @@ async function saveForm(e, kind, id) {
 }
 
 /* ---------- settings ---------- */
-function viewSettings() {
-  $('#panel').innerHTML = `<div class="bg-navy-800 border border-slate-700 rounded-xl p-6 max-w-md">
+async function viewSettings() {
+  const s = await api('/api/admin/settings');
+  $('#panel').innerHTML = `<div class="bg-navy-800 border border-slate-700 rounded-xl p-6 max-w-md mb-6">
+    <h2 class="text-lg font-semibold text-white mb-4">Contact details</h2>
+    <form id="cs" class="space-y-3">
+      <div><label class="text-sm">WhatsApp number (with country code, e.g. 919876543210)</label><input id="cs-wa" class="inp" value="${esc(s.whatsapp)}"></div>
+      <div><label class="text-sm">Contact email</label><input id="cs-email" type="email" class="inp" value="${esc(s.email)}"></div>
+      <div><label class="text-sm">Phone (shown on website, optional)</label><input id="cs-phone" class="inp" value="${esc(s.phone)}"></div>
+      <button class="btn btn-pri">Save contact details</button>
+    </form></div>
+    <div class="bg-navy-800 border border-slate-700 rounded-xl p-6 max-w-md">
     <h2 class="text-lg font-semibold text-white mb-4">Change password</h2>
     <form id="pw" class="space-y-3">
       <div><label class="text-sm">Current password</label><input id="pw-cur" type="password" class="inp" autocomplete="current-password" required></div>
       <div><label class="text-sm">New password (min 8 characters)</label><input id="pw-new" type="password" class="inp" autocomplete="new-password" minlength="8" required></div>
       <button class="btn btn-pri">Update password</button>
     </form></div>`;
+  $('#cs').addEventListener('submit', async e => {
+    e.preventDefault();
+    try { await api('/api/admin/settings', 'PUT', { whatsapp: $('#cs-wa').value, email: $('#cs-email').value, phone: $('#cs-phone').value }); toast('Contact details saved'); }
+    catch (err) { toast(err.message, false); }
+  });
   $('#pw').addEventListener('submit', async e => {
     e.preventDefault();
     try { await api('/api/admin/password', 'POST', { current: $('#pw-cur').value, new: $('#pw-new').value }); toast('Password updated'); e.target.reset(); }

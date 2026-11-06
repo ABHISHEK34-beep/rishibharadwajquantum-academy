@@ -64,8 +64,13 @@ CREATE TABLE IF NOT EXISTS courses (
     description TEXT NOT NULL DEFAULT '',
     topics TEXT NOT NULL DEFAULT '',          -- newline separated
     icon TEXT NOT NULL DEFAULT 'fa-atom',
+    category TEXT NOT NULL DEFAULT 'quantum', -- school / neet-jee / practical / quantum / rf
     sort_order INTEGER NOT NULL DEFAULT 0,
     published INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS workshops (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,6 +89,8 @@ CREATE TABLE IF NOT EXISTS messages (
     email TEXT NOT NULL,
     phone TEXT NOT NULL DEFAULT '',
     interest TEXT NOT NULL DEFAULT '',
+    class_course TEXT NOT NULL DEFAULT '',
+    learning_mode TEXT NOT NULL DEFAULT '',
     message TEXT NOT NULL,
     is_read INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
@@ -99,22 +106,65 @@ CREATE TABLE IF NOT EXISTS registrations (
 );
 """
 
+# Course categories (order = order shown on the website).  (key, label, icon)
+CATEGORIES = [
+    ("school", "School-Level Physics", "fa-school"),
+    ("neet-jee", "NEET & JEE Physics", "fa-graduation-cap"),
+    ("practical", "Practical Physics & Experiments", "fa-flask"),
+    ("quantum", "Quantum Technology", "fa-atom"),
+    ("rf", "RF, Microwave & Electronics", "fa-satellite-dish"),
+]
+CATEGORY_KEYS = {c[0] for c in CATEGORIES}
+
+# (title, audience, description, topics, icon, category)
 SEED_COURSES = [
+    # --- A. School-Level Physics
+    ("Classes 9-10 Physics Fundamentals", "Classes 9-10",
+     "Build a strong base in school physics through concept-based learning, practical demonstrations and simple experiments.",
+     "Motion, Force & Energy\nLight, Sound & Electricity\nPractical Demonstrations & Experiments\nConcept-Based Problem Solving", "fa-school", "school"),
+    ("Classes 11-12 Physics", "Classes 11-12",
+     "Concept-first physics for senior secondary students, connecting board syllabus topics with experiments and real applications.",
+     "Mechanics & Thermodynamics\nElectricity & Magnetism\nOptics & Modern Physics\nPractical Demonstrations & Experiments", "fa-book-open", "school"),
+    # --- B. NEET & JEE Physics Preparation
+    ("Classes 11-12 JEE & NEET Physics", "Classes 11-12, NEET & JEE aspirants",
+     "A combined Class 11-12 physics programme for students preparing for NEET and JEE, covering the full syllabus with concept building, numerical practice, PYQs and regular tests.",
+     "Class 11 Physics (Mechanics, Thermodynamics, Waves)\nClass 12 Physics (Electromagnetism, Optics, Modern Physics)\nChapter-wise Concept Building\nNumerical Problem-Solving\nPrevious-Year Questions (PYQs)\nPractice & Mock Tests\nDoubt-Clearing Sessions", "fa-atom", "neet-jee"),
+    ("NEET Physics Preparation", "NEET aspirants",
+     "Chapter-wise concept building with numerical practice, previous-year questions and regular doubt-clearing sessions.",
+     "Chapter-wise Concept Building\nNumerical Problem-Solving\nPrevious-Year Questions (PYQs)\nPractice & Mock Tests\nDoubt-Clearing Sessions", "fa-user-doctor", "neet-jee"),
+    ("JEE Main Physics Preparation", "JEE Main aspirants",
+     "Structured physics preparation for JEE Main with problem-solving practice, PYQs, mock tests and doubt support.",
+     "Chapter-wise Concept Building\nNumerical Problem-Solving\nPrevious-Year Questions (PYQs)\nPractice & Mock Tests\nDoubt-Clearing Sessions", "fa-bullseye", "neet-jee"),
+    ("JEE Advanced Physics Preparation", "JEE Advanced aspirants",
+     "Deeper conceptual and analytical physics for JEE Advanced, with advanced problem-solving, PYQs and test practice.",
+     "Advanced Concept Building\nAnalytical Problem-Solving\nPrevious-Year Questions (PYQs)\nPractice & Mock Tests\nDoubt-Clearing Sessions", "fa-brain", "neet-jee"),
+    # --- C. Practical Physics & Experiments
+    ("Practical Physics & Experiments", "Class 11-12, UG, Educators",
+     "Hands-on experiments that connect classroom theory with measurement, observation and data analysis.",
+     "Photoelectric Effect\nPlanck's Constant Experiment\nMalus's Law\nDiffraction and Interference\nHydrogen Spectrum\nWien's Displacement Law\nIntroduction to Atomic Physics and Rydberg Atoms", "fa-flask", "practical"),
+    # --- D. Quantum Technology (first four rows are the original courses, kept as-is)
     ("Fundamental Physics to Quantum Mechanics", "Class 11-12, UG, Educators",
      "Transition from classical to quantum physics. Covers Blackbody Radiation, Photoelectric Effect, Wave-Particle Duality, and Python simulations.",
-     "Double-Slit Interference\nPlanck's Quantum Hypothesis\nIntro to Atomic Spectra", "fa-atom"),
+     "Double-Slit Interference\nPlanck's Quantum Hypothesis\nIntro to Atomic Spectra", "fa-atom", "quantum"),
     ("Introduction to Quantum Computing", "Beginner Friendly",
      "Learn the basics of qubits, superposition, and entanglement. Includes hands-on Python simulations and introduction to Qiskit.",
-     "Classical vs Quantum Bits\nBasic Quantum Gates\nQuantum Circuits", "fa-microchip"),
+     "Classical vs Quantum Bits\nBasic Quantum Gates\nQuantum Circuits\nIntroduction to Qiskit & Python Simulations", "fa-microchip", "quantum"),
     ("Quantum Communication & QKD", "Intermediate",
      "Understand principles of secure quantum communication, no-cloning theorem, and cryptographic protocols.",
-     "The No-Cloning Principle\nBB84 Protocol\nSimulation-Based Learning", "fa-network-wired"),
+     "The No-Cloning Principle\nBB84 Protocol\nQuantum Key Distribution (QKD)\nSimulation-Based Learning", "fa-network-wired", "quantum"),
     ("Introduction to Quantum Sensing", "Advanced",
      "Explore precision measurement techniques using atomic states. Discover NV-centers and Rydberg-atom based sensors.",
-     "Classical vs Quantum Sensors\nAtomic Magnetometers\nNoise & Sensitivity", "fa-satellite-dish"),
+     "Classical vs Quantum Sensors\nAtomic Magnetometers\nRydberg Atom-Based RF Sensing\nNoise & Sensitivity", "fa-satellite-dish", "quantum"),
+    # --- E. RF, Microwave & Electronics
+    ("Basic Electronics", "Class 11-12, UG",
+     "Foundational electronics for students who want to move towards communication systems, RF and instrumentation.",
+     "Semiconductor Devices\nAnalog Circuit Basics\nDigital Electronics Basics\nCircuit Measurements", "fa-microchip", "rf"),
     ("Intro to RF and Microwave Technologies", "Engineering & Research",
      "An introductory pathway for understanding instrumentation, S-parameters, and measurement vital for quantum systems.",
-     "Network Analyzers\nLow-Noise Amplifiers\nCryogenic Considerations", "fa-wave-square"),
+     "Network Analyzers\nLow-Noise Amplifiers\nCryogenic Considerations\nMicrowave Measurements", "fa-wave-square", "rf"),
+    ("Antenna Fundamentals & Communication Systems", "UG, Engineering & Research",
+     "Core ideas of antennas and electromagnetic radiation, with an introduction to how communication systems are built.",
+     "Antenna Fundamentals\nRadiation & Propagation Basics\nIntroduction to Communication Systems", "fa-tower-broadcast", "rf"),
 ]
 
 SEED_WORKSHOPS = [
@@ -124,7 +174,16 @@ SEED_WORKSHOPS = [
     ("Classroom Physics to Quantum Tech",
      "A comprehensive seminar bridging the gap between high-school/UG physics curriculum and modern quantum technology applications.",
      "Planning", "--", "Hybrid", "Core Physics"),
+    ("Hands-On Physics Experiments Workshop",
+     "Perform and analyse classic experiments such as the photoelectric effect, Malus's law and diffraction. Suitable for school and college groups.",
+     "Planning", "TBA", "Offline", "Experiments,School & College"),
+    ("Quantum Technology Awareness Programme",
+     "An introductory session on quantum computing, quantum communication and quantum sensing for students and teachers. No prior background required.",
+     "Planning", "TBA", "Hybrid", "Awareness,Quantum"),
 ]
+
+DEFAULT_SETTINGS = {"whatsapp": "919795925796", "email": "rishibharadwajquantumacademy@gmail.com", "phone": ""}
+LEARNING_MODES = ("", "Online", "Offline", "Either")
 
 
 def get_db():
@@ -164,16 +223,47 @@ def init_db():
         if generated:
             print("  (default password - change it from the admin panel after logging in)\n")
 
-    if cur.execute("SELECT COUNT(*) FROM courses").fetchone()[0] == 0:
+    # --- migrate databases created before categories / new form fields existed
+    migrated = False
+    if "category" not in _columns(cur, "courses"):
+        cur.execute("ALTER TABLE courses ADD COLUMN category TEXT NOT NULL DEFAULT 'quantum'")
+        cur.execute("UPDATE courses SET category='rf' WHERE title='Intro to RF and Microwave Technologies'")
+        migrated = True
+    for col in ("class_course", "learning_mode"):
+        if col not in _columns(cur, "messages"):
+            cur.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+
+    for k, v in DEFAULT_SETTINGS.items():
+        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
+
+    # Seed on a fresh DB; on a migrated DB only add the new rows that are missing
+    # (never re-adds things the admin deleted on later restarts).
+    fresh_courses = cur.execute("SELECT COUNT(*) FROM courses").fetchone()[0] == 0
+    if fresh_courses or migrated:
         for i, c in enumerate(SEED_COURSES):
-            cur.execute("INSERT INTO courses (title, audience, description, topics, icon, sort_order) VALUES (?,?,?,?,?,?)",
+            if cur.execute("SELECT 1 FROM courses WHERE title = ?", (c[0],)).fetchone():
+                continue
+            cur.execute("INSERT INTO courses (title, audience, description, topics, icon, category, sort_order) VALUES (?,?,?,?,?,?,?)",
                         (*c, i))
-    if cur.execute("SELECT COUNT(*) FROM workshops").fetchone()[0] == 0:
+    fresh_ws = cur.execute("SELECT COUNT(*) FROM workshops").fetchone()[0] == 0
+    if fresh_ws or migrated:
         for i, w in enumerate(SEED_WORKSHOPS):
+            if cur.execute("SELECT 1 FROM workshops WHERE title = ?", (w[0],)).fetchone():
+                continue
             cur.execute("INSERT INTO workshops (title, description, status, date_label, mode, tags, sort_order) VALUES (?,?,?,?,?,?,?)",
                         (*w, i))
     db.commit()
     db.close()
+
+
+def _columns(cur, table):
+    return {r[1] for r in cur.execute(f"PRAGMA table_info({table})")}
+
+
+def get_settings(db):
+    s = dict(DEFAULT_SETTINGS)
+    s.update({r["key"]: r["value"] for r in db.execute("SELECT key, value FROM settings")})
+    return s
 
 
 # --------------------------------------------------------------------------
@@ -201,7 +291,7 @@ def course_row(r):
         "id": r["id"], "title": r["title"], "audience": r["audience"],
         "description": r["description"],
         "topics": [t for t in r["topics"].split("\n") if t.strip()],
-        "topics_text": r["topics"], "icon": r["icon"],
+        "topics_text": r["topics"], "icon": r["icon"], "category": r["category"],
         "sort_order": r["sort_order"], "published": bool(r["published"]),
     }
 
@@ -250,6 +340,67 @@ def health():
     return jsonify({"ok": True})
 
 
+# ---- Legal pages (draft wording - have the academy owner / a lawyer review it)
+LEGAL = {
+    "privacy": ("Privacy Policy", [
+        ("What we collect", "When you use a form on this website we collect the details you enter: your name, email address, phone number, class or course of interest, learning-mode preference and your message or note."),
+        ("How we use it", "We use this information only to reply to your enquiry, handle course or workshop registrations, and share details about RBQA programmes you asked about."),
+        ("Storage and sharing", "Submissions are stored in the academy's website database and are visible only to authorised RBQA administrators. We do not sell your personal information. We do not share it with third parties except where required by law."),
+        ("Your choices", "You can ask us to correct or delete your information at any time by writing to the email address shown in the Contact section."),
+        ("Cookies", "The public website does not use advertising or tracking cookies. A session cookie is used only for administrator login."),
+        ("Children", "Students under 18 should submit forms with the knowledge of a parent or guardian."),
+    ]),
+    "terms": ("Terms & Conditions", [
+        ("Use of this website", "This website provides information about the programmes of Rishi Bharadwaj Quantum Academy (RBQA). Content is for general educational information and may be updated without notice."),
+        ("Registrations and enquiries", "Submitting an enquiry or registration form expresses your interest only. A seat in a course or workshop is confirmed only when RBQA confirms it to you."),
+        ("Schedules and fees", "Course content, schedules, modes (online or offline) and fees may change. The details communicated to you at the time of confirmation apply."),
+        ("Intellectual property", "Study material, notes and experiment manuals published by RBQA are for the personal learning use of registered students and may not be copied or redistributed without permission."),
+        ("Independence", "RBQA is an independent academic initiative. It is not affiliated with, or endorsed by, any institution in which its founder is employed or has studied."),
+        ("Contact", "For questions about these terms, use the email address shown in the Contact section."),
+    ]),
+    "refund": ("Refund & Cancellation Policy", [
+        ("Fees", "Fees for each course or workshop are communicated at the time of registration. Online payment is not yet available on this website."),
+        ("Cancellation by you", "To cancel a registration, write to RBQA using the email address shown in the Contact section, mentioning the course or workshop and your registered name."),
+        ("Refunds", "Whether a refund applies, and for how much, depends on the programme and on how far it has progressed. The refund terms for a programme are shared with you when its fee is communicated."),
+        ("Cancellation by RBQA", "If RBQA cancels or reschedules a workshop or batch, you will be informed and offered a reschedule or a refund of the fee paid for that programme."),
+    ]),
+}
+
+
+@app.get("/privacy", endpoint="legal_privacy")
+@app.get("/terms", endpoint="legal_terms")
+@app.get("/refund", endpoint="legal_refund")
+def legal_page():
+    key = request.path.strip("/")
+    title, sections = LEGAL[key]
+    return render_template("legal.html", title=title, sections=sections,
+                           email=get_settings(get_db())["email"])
+
+
+@app.get("/robots.txt")
+def robots():
+    body = f"User-agent: *\nDisallow: /admin\nDisallow: /api/\nSitemap: {request.url_root}sitemap.xml\n"
+    return Response(body, mimetype="text/plain")
+
+
+@app.get("/sitemap.xml")
+def sitemap():
+    urls = ["", "privacy", "terms", "refund"]
+    items = "".join(f"<url><loc>{request.url_root}{u}</loc></url>" for u in urls)
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</urlset>'
+    return Response(xml, mimetype="application/xml")
+
+
+@app.get("/api/config")
+def public_config():
+    s = get_settings(get_db())
+    return jsonify({
+        "whatsapp": re.sub(r"\D", "", s["whatsapp"]),   # digits only, e.g. 919876543210
+        "email": s["email"], "phone": s["phone"],
+        "categories": [{"key": k, "label": l, "icon": i} for k, l, i in CATEGORIES],
+    })
+
+
 # --------------------------------------------------------------------------
 # Public API
 # --------------------------------------------------------------------------
@@ -272,18 +423,25 @@ def contact():
     if rate_limited():
         return bad("Too many submissions. Please try again later.", 429)
     d = request.get_json(silent=True) or {}
+    ok_msg = "Thank you! We have received your message and will get back to you soon."
+    if clean(d.get("website"), 200):          # honeypot: real users never fill this
+        return jsonify({"ok": True, "message": ok_msg})
     name, email = clean(d.get("name"), 120), clean(d.get("email"), 200)
     phone, interest = clean(d.get("phone"), 30), clean(d.get("interest"), 40)
+    class_course = clean(d.get("class_course"), 80)
+    learning_mode = clean(d.get("learning_mode"), 20)
+    if learning_mode not in LEARNING_MODES:
+        learning_mode = ""
     message = clean(d.get("message"), 3000)
     if not name or not message:
         return bad("Name and message are required.")
     if not EMAIL_RE.match(email):
         return bad("Please enter a valid email address.")
     db = get_db()
-    db.execute("INSERT INTO messages (name,email,phone,interest,message,created_at) VALUES (?,?,?,?,?,?)",
-               (name, email, phone, interest, message, now_iso()))
+    db.execute("INSERT INTO messages (name,email,phone,interest,class_course,learning_mode,message,created_at) VALUES (?,?,?,?,?,?,?,?)",
+               (name, email, phone, interest, class_course, learning_mode, message, now_iso()))
     db.commit()
-    return jsonify({"ok": True, "message": "Thank you! We have received your message and will get back to you soon."})
+    return jsonify({"ok": True, "message": ok_msg})
 
 
 @app.post("/api/workshops/<int:wid>/register")
@@ -297,6 +455,8 @@ def register(wid):
     if ws["status"] == "Completed":
         return bad("Registration for this workshop is closed.")
     d = request.get_json(silent=True) or {}
+    if clean(d.get("website"), 200):          # honeypot
+        return jsonify({"ok": True, "message": f"You're on the list for \"{ws['title']}\". We'll email you the details."})
     name, email = clean(d.get("name"), 120), clean(d.get("email"), 200)
     phone, note = clean(d.get("phone"), 30), clean(d.get("note"), 1000)
     if not name:
@@ -436,14 +596,38 @@ def csv_response(filename, header, rows):
 def admin_export(kind):
     db = get_db()
     if kind == "messages":
-        rows = db.execute("SELECT created_at,name,email,phone,interest,message FROM messages ORDER BY id DESC").fetchall()
-        return csv_response("messages.csv", ["Received (UTC)", "Name", "Email", "Phone", "Interest", "Message"], rows)
+        rows = db.execute("SELECT created_at,name,email,phone,interest,class_course,learning_mode,message FROM messages ORDER BY id DESC").fetchall()
+        return csv_response("messages.csv", ["Received (UTC)", "Name", "Email", "Phone", "Interest", "Class / Course", "Mode", "Message"], rows)
     if kind == "registrations":
         rows = db.execute("""SELECT r.created_at, w.title, r.name, r.email, r.phone, r.note
                              FROM registrations r JOIN workshops w ON w.id = r.workshop_id
                              ORDER BY r.id DESC""").fetchall()
         return csv_response("registrations.csv", ["Registered (UTC)", "Workshop", "Name", "Email", "Phone", "Note"], rows)
     return bad("Unknown export.", 404)
+
+
+# ---- contact settings (WhatsApp number, email, phone)
+@app.get("/api/admin/settings")
+@admin_required
+def admin_settings():
+    return jsonify(get_settings(get_db()))
+
+
+@app.put("/api/admin/settings")
+@admin_required
+def admin_settings_update():
+    d = request.get_json(silent=True) or {}
+    whatsapp = clean(d.get("whatsapp"), 20)
+    email, phone = clean(d.get("email"), 200), clean(d.get("phone"), 30)
+    if whatsapp and not re.fullmatch(r"\+?[\d\s-]{10,16}", whatsapp):
+        return bad("WhatsApp number must be 10-15 digits including country code, e.g. 919876543210.")
+    if email and not EMAIL_RE.match(email):
+        return bad("Please enter a valid email address.")
+    db = get_db()
+    for k, v in (("whatsapp", whatsapp), ("email", email), ("phone", phone)):
+        db.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (k, v))
+    db.commit()
+    return jsonify({"ok": True})
 
 
 # ---- courses
@@ -455,9 +639,12 @@ def course_payload(d):
         order = int(d.get("sort_order") or 0)
     except (TypeError, ValueError):
         order = 0
+    category = clean(d.get("category"), 20)
+    if category not in CATEGORY_KEYS:
+        category = "quantum"
     return (title, clean(d.get("audience"), 200), clean(d.get("description"), 2000),
             clean(d.get("topics_text"), 2000), clean(d.get("icon"), 40) or "fa-atom",
-            order, 1 if d.get("published", True) else 0), None
+            category, order, 1 if d.get("published", True) else 0), None
 
 
 @app.get("/api/admin/courses")
@@ -474,7 +661,7 @@ def admin_course_create():
     if err:
         return bad(err)
     db = get_db()
-    cur = db.execute("INSERT INTO courses (title,audience,description,topics,icon,sort_order,published) VALUES (?,?,?,?,?,?,?)", p)
+    cur = db.execute("INSERT INTO courses (title,audience,description,topics,icon,category,sort_order,published) VALUES (?,?,?,?,?,?,?,?)", p)
     db.commit()
     return jsonify({"ok": True, "id": cur.lastrowid}), 201
 
@@ -486,7 +673,7 @@ def admin_course_update(cid):
     if err:
         return bad(err)
     db = get_db()
-    cur = db.execute("UPDATE courses SET title=?,audience=?,description=?,topics=?,icon=?,sort_order=?,published=? WHERE id=?", (*p, cid))
+    cur = db.execute("UPDATE courses SET title=?,audience=?,description=?,topics=?,icon=?,category=?,sort_order=?,published=? WHERE id=?", (*p, cid))
     db.commit()
     return jsonify({"ok": True}) if cur.rowcount else bad("Not found.", 404)
 

@@ -18,11 +18,47 @@
   });
 
   let courses = [], workshops = [];
+  let categories = [
+    { key: "school", label: "School-Level Physics" },
+    { key: "neet-jee", label: "NEET & JEE Physics" },
+    { key: "practical", label: "Practical Physics & Experiments" },
+    { key: "quantum", label: "Quantum Technology" },
+    { key: "rf", label: "RF, Microwave & Electronics" },
+  ];
+  let activeCategory = "all";
 
   /* ---------------- Courses ---------------- */
+  function renderFilters() {
+    const wrap = $("#course-filters");
+    const tabs = [{ key: "all", label: "All" }, ...categories];
+    wrap.innerHTML = tabs.map((c) => {
+      const on = c.key === activeCategory;
+      return `<button role="tab" aria-selected="${on}" data-category="${esc(c.key)}"
+        class="px-4 py-2 rounded-full text-sm font-medium border transition-colors ${on
+          ? "bg-accent text-navy-900 border-accent"
+          : "border-slate-600 text-slate-300 hover:border-accent hover:text-accent"}">${esc(c.label)}</button>`;
+    }).join("");
+  }
+
+  function setCategory(key) {
+    activeCategory = key;
+    renderFilters();
+    renderCourses();
+  }
+
+  function fillClassCourseOptions() {
+    const sel = $("#class_course");
+    if (!sel) return;
+    const opts = ["Class 9", "Class 10", "Class 11", "Class 12", "Dropper (NEET / JEE)", "Undergraduate", "Teacher / Researcher"];
+    sel.innerHTML = '<option value="" selected>Select class or course</option>'
+      + `<optgroup label="Class / Level">${opts.map((o) => `<option>${esc(o)}</option>`).join("")}</optgroup>`
+      + `<optgroup label="Courses">${courses.map((c) => `<option>${esc(c.title)}</option>`).join("")}</optgroup>`;
+  }
+
   function renderCourses() {
     const grid = $("#courses-grid");
-    const cards = courses.map((c) => `
+    const visible = activeCategory === "all" ? courses : courses.filter((c) => c.category === activeCategory);
+    const cards = visible.map((c) => `
       <div class="course-card bg-navy-800 rounded-xl p-8 border border-slate-700/50 flex flex-col h-full relative overflow-hidden group">
         <div class="absolute top-0 right-0 w-32 h-32 bg-accent/5 rounded-bl-full -mr-8 -mt-8 transition-transform group-hover:scale-110"></div>
         <div class="w-12 h-12 bg-navy-900 rounded-lg flex items-center justify-center mb-6 text-accent border border-accent/20">
@@ -48,7 +84,8 @@
           Explore Experiments
         </button>
       </div>`;
-    grid.innerHTML = cards + lab;
+    const empty = '<p class="text-slate-400 col-span-full text-center">No courses in this category yet.</p>';
+    grid.innerHTML = (cards || empty) + (activeCategory === "all" || activeCategory === "practical" ? lab : "");
   }
 
   /* ---------------- Workshops ---------------- */
@@ -140,6 +177,9 @@
           <input id="r-phone" type="tel" class="${inputCls}" maxlength="30"></div>
         <div><label class="block text-sm text-slate-300 mb-1" for="r-note">Anything we should know?</label>
           <textarea id="r-note" rows="3" class="${inputCls} resize-none" maxlength="1000"></textarea></div>
+        <div class="absolute -left-[9999px] h-0 w-0 overflow-hidden" aria-hidden="true">
+          <label for="r-website">Leave this field empty</label>
+          <input id="r-website" tabindex="-1" autocomplete="off"></div>
         <div id="reg-status" class="hidden text-sm rounded-md px-4 py-3" role="status"></div>
         <button id="reg-submit" class="w-full py-3 rounded-md bg-accent text-navy-900 font-bold hover:bg-cyan-300 transition-colors">Submit</button>
       </form>`);
@@ -151,6 +191,7 @@
         const r = await post(`/api/workshops/${id}/register`, {
           name: $("#r-name").value, email: $("#r-email").value,
           phone: $("#r-phone").value, note: $("#r-note").value,
+          website: $("#r-website").value,   // honeypot
         });
         showStatus(st, r.message, true);
         $("#reg-form").querySelectorAll("input,textarea").forEach((i) => (i.disabled = true));
@@ -170,14 +211,23 @@
 
   /* ---------------- Delegated clicks ---------------- */
   document.addEventListener("click", (e) => {
+    // links that pre-select a category tab or the enquiry type
+    const link = e.target.closest("a[data-filter], a[data-interest]");
+    if (link) {
+      if (link.dataset.filter) setCategory(link.dataset.filter);
+      if (link.dataset.interest) $("#interest").value = link.dataset.interest;
+      return;                                  // the href still scrolls to the section
+    }
     const t = e.target.closest("button");
     if (!t) return;
-    if (t.dataset.course) showCourse(Number(t.dataset.course));
+    if (t.dataset.category) setCategory(t.dataset.category);
+    else if (t.dataset.course) showCourse(Number(t.dataset.course));
     else if (t.dataset.workshop) showRegister(Number(t.dataset.workshop));
     else if (t.dataset.enquire) {
       const c = courses.find((x) => x.id === Number(t.dataset.enquire));
       closeModal();
       $("#interest").value = "course";
+      if (c) $("#class_course").value = c.title;
       const msg = $("#message");
       if (c && !msg.value) msg.value = `I'd like to know more about "${c.title}".`;
       $("#contact").scrollIntoView({ behavior: "smooth" });
@@ -194,6 +244,8 @@
     const body = {
       name: $("#name").value, email: $("#email").value, phone: $("#phone").value,
       interest: $("#interest").value, message: $("#message").value,
+      class_course: $("#class_course").value, learning_mode: $("#learning_mode").value,
+      website: $("#website").value,            // honeypot
     };
     if (!body.name.trim() || !body.email.trim() || !body.message.trim()) {
       showStatus(st, "Please fill in your name, email and message.", false); return;
@@ -211,10 +263,32 @@
   });
 
   /* ---------------- Boot ---------------- */
+  function applyConfig(cfg) {
+    if (cfg.categories && cfg.categories.length) categories = cfg.categories;
+    if (cfg.email) {
+      const a = $("#contact-email");
+      a.href = "mailto:" + cfg.email; a.textContent = cfg.email;
+    }
+    if (cfg.phone) { const p = $("#contact-phone"); p.textContent = cfg.phone; p.classList.remove("hidden"); }
+    if (cfg.whatsapp) {
+      const url = "https://wa.me/" + cfg.whatsapp + "?text=" +
+        encodeURIComponent("Hello RBQA, I would like to enquire about your courses.");
+      const btn = $("#wa-btn"), fl = $("#wa-float");
+      btn.href = url; btn.classList.remove("hidden");
+      fl.href = url; fl.classList.remove("hidden"); fl.classList.add("flex");
+      const d = cfg.whatsapp;
+      $("#wa-text").textContent = d.length === 12 && d.startsWith("91")
+        ? `+91 ${d.slice(2, 7)} ${d.slice(7)}` : "+" + d;
+    }
+  }
+
   (async function init() {
+    try { applyConfig(await api("/api/config")); } catch (_) { /* defaults stay */ }
     try {
       [courses, workshops] = await Promise.all([api("/api/courses"), api("/api/workshops")]);
+      renderFilters();
       renderCourses();
+      fillClassCourseOptions();
       renderWorkshops();
     } catch (err) {
       $("#courses-grid").innerHTML = `<p class="text-red-300 col-span-full text-center">Could not load courses: ${esc(err.message)}</p>`;
