@@ -276,7 +276,9 @@
       const btn = $("#wa-btn"), fl = $("#wa-float");
       btn.href = url; btn.classList.remove("hidden");
       fl.href = url; fl.classList.remove("hidden"); fl.classList.add("flex");
-      $("#wa-text").textContent = "+" + cfg.whatsapp;
+      const d = cfg.whatsapp;
+      $("#wa-text").textContent = d.length === 12 && d.startsWith("91")
+        ? `+91 ${d.slice(2, 7)} ${d.slice(7)}` : "+" + d;
     }
   }
 

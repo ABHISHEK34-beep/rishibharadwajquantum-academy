@@ -182,7 +182,7 @@ SEED_WORKSHOPS = [
      "Planning", "TBA", "Hybrid", "Awareness,Quantum"),
 ]
 
-DEFAULT_SETTINGS = {"whatsapp": "", "email": "info@rbqa.in", "phone": ""}
+DEFAULT_SETTINGS = {"whatsapp": "919795925796", "email": "rishibharadwajquantumacademy@gmail.com", "phone": ""}
 LEARNING_MODES = ("", "Online", "Offline", "Either")
 
 
