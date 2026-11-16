@@ -1,6 +1,6 @@
 # RBQA – Rishi Bharadwaj Quantum Academy
 
-Flask + SQLite backend with the original website as the frontend and an admin panel.
+Flask backend (SQLite locally, Postgres in production) with the original website as the frontend and an admin panel.
 
 ## Run locally
 
@@ -23,8 +23,15 @@ First start creates `rbqa.db` and seeds the 5 courses and 2 workshops from the d
 Anything you add/edit/hide in the admin panel shows on the public site immediately.
 
 ## Options (environment variables)
-`PORT` (default 5000), `RBQA_ADMIN_USER`, `RBQA_ADMIN_PASS` (used on first run only), `RBQA_DB`, `RBQA_SECRET`.
+`PORT` (default 5000), `RBQA_ADMIN_USER`, `RBQA_ADMIN_PASS` (used on first run only), `RBQA_DB`, `RBQA_SECRET`, `DATABASE_URL`.
 Example: `RBQA_ADMIN_PASS='MyStrongPass1' python app.py`
+
+## Database
+- **Local development:** nothing to set up. A SQLite file (`rbqa.db`, or the path in `RBQA_DB`) is used.
+- **Production (e.g. Render):** set `DATABASE_URL` to a Postgres connection string (Neon, Supabase, Render Postgres...).
+  The tables are created automatically on first start. Because the data then lives outside the web server,
+  it survives restarts, redeploys and free-tier sleep. Also set `RBQA_SECRET` (any long random string)
+  so admin logins survive restarts.
 
 ## Before going public
 Use a production server (e.g. `gunicorn app:app`) behind HTTPS and change the admin password.

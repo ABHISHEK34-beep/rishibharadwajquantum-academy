@@ -1,6 +1,7 @@
 """
 Rishi Bharadwaj Quantum Academy (RBQA) - backend
-Flask + SQLite. Serves the public site, a JSON API and an admin panel.
+Flask + Postgres (DATABASE_URL) or SQLite (local). Serves the public site,
+a JSON API and an admin panel.
 
 Run:  python app.py      ->  http://localhost:5000
 Admin: http://localhost:5000/admin
@@ -20,6 +21,10 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("RBQA_DB", os.path.join(BASE_DIR, "rbqa.db"))
+# Production: set DATABASE_URL to a Postgres URL so data survives restarts/redeploys.
+# Local development: leave it unset and a SQLite file (DB_PATH) is used.
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+USE_PG = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 SECRET_FILE = os.path.join(BASE_DIR, ".secret_key")
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -170,11 +175,87 @@ DEFAULT_SETTINGS = {"whatsapp": "919795925796", "email": "rishibharadwajquantuma
 LEARNING_MODES = ("", "Online", "Offline", "Either")
 
 
+class Row:
+    """Row that works like sqlite3.Row on both backends: row[0], row["name"],
+    iteration over values, keys() and dict(row)."""
+    __slots__ = ("_names", "_values")
+
+    def __init__(self, names, values):
+        self._names, self._values = names, tuple(values)
+
+    def __getitem__(self, k):
+        if isinstance(k, str):
+            try:
+                return self._values[self._names.index(k)]
+            except ValueError:
+                raise KeyError(k) from None
+        return self._values[k]
+
+    def keys(self):
+        return list(self._names)
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+
+def _pg_row_factory(cursor):
+    names = [c.name for c in cursor.description] if cursor.description else []
+    return lambda values: Row(names, values)
+
+
+class Database:
+    """Thin wrapper so the app code runs unchanged on SQLite (local) and
+    Postgres (production, via DATABASE_URL)."""
+
+    def __init__(self):
+        if USE_PG:
+            import psycopg
+            # prepare_threshold=None keeps it compatible with pooled (pgbouncer) URLs
+            self.conn = psycopg.connect(DATABASE_URL, row_factory=_pg_row_factory,
+                                        connect_timeout=15, prepare_threshold=None)
+        else:
+            self.conn = sqlite3.connect(DB_PATH)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA foreign_keys = ON")
+
+    def execute(self, sql, params=()):
+        if USE_PG:
+            cur = self.conn.cursor()
+            cur.execute(sql.replace("?", "%s"), tuple(params) or None)
+            return cur
+        return self.conn.execute(sql, params)
+
+    def insert(self, sql, params):
+        """INSERT and return the new row id."""
+        if USE_PG:
+            return self.execute(sql + " RETURNING id", params).fetchone()["id"]
+        return self.conn.execute(sql, params).lastrowid
+
+    def script(self, sql):
+        if USE_PG:
+            self.conn.cursor().execute(sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY"))
+        else:
+            self.conn.executescript(sql)
+
+    def columns(self, table):
+        if USE_PG:
+            rows = self.execute("SELECT column_name FROM information_schema.columns WHERE table_name = ?", (table,))
+            return {r[0] for r in rows}
+        return {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA foreign_keys = ON")
+        g.db = Database()
     return g.db
 
 
@@ -190,58 +271,56 @@ def now_iso():
 
 
 def init_db():
-    db = sqlite3.connect(DB_PATH)
-    db.executescript(SCHEMA)
-    cur = db.cursor()
+    db = Database()
+    if USE_PG:
+        # several gunicorn workers start at once: let one of them set up at a time
+        db.execute("SELECT pg_advisory_xact_lock(727272)")
+    db.script(SCHEMA)
 
-    if cur.execute("SELECT COUNT(*) FROM admin").fetchone()[0] == 0:
+    if db.execute("SELECT COUNT(*) FROM admin").fetchone()[0] == 0:
         username = os.environ.get("RBQA_ADMIN_USER", "admin")
         password = os.environ.get("RBQA_ADMIN_PASS")
         generated = False
         if not password:
             password = "admin123"
             generated = True
-        cur.execute("INSERT INTO admin (id, username, password_hash) VALUES (1, ?, ?)",
-                    (username, generate_password_hash(password)))
+        db.execute("INSERT INTO admin (id, username, password_hash) VALUES (1, ?, ?)",
+                   (username, generate_password_hash(password)))
         print(f"\n  Admin account created -> username: {username}  password: {password}")
         if generated:
             print("  (default password - change it from the admin panel after logging in)\n")
 
     # --- migrate databases created before categories / new form fields existed
     migrated = False
-    if "category" not in _columns(cur, "courses"):
-        cur.execute("ALTER TABLE courses ADD COLUMN category TEXT NOT NULL DEFAULT 'quantum'")
-        cur.execute("UPDATE courses SET category='rf' WHERE title='Intro to RF and Microwave Technologies'")
+    if "category" not in db.columns("courses"):
+        db.execute("ALTER TABLE courses ADD COLUMN category TEXT NOT NULL DEFAULT 'quantum'")
+        db.execute("UPDATE courses SET category='rf' WHERE title='Intro to RF and Microwave Technologies'")
         migrated = True
     for col in ("class_course", "learning_mode"):
-        if col not in _columns(cur, "messages"):
-            cur.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+        if col not in db.columns("messages"):
+            db.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
 
     for k, v in DEFAULT_SETTINGS.items():
-        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
+        db.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING", (k, v))
 
     # Seed on a fresh DB; on a migrated DB only add the new rows that are missing
     # (never re-adds things the admin deleted on later restarts).
-    fresh_courses = cur.execute("SELECT COUNT(*) FROM courses").fetchone()[0] == 0
+    fresh_courses = db.execute("SELECT COUNT(*) FROM courses").fetchone()[0] == 0
     if fresh_courses or migrated:
         for i, c in enumerate(SEED_COURSES):
-            if cur.execute("SELECT 1 FROM courses WHERE title = ?", (c[0],)).fetchone():
+            if db.execute("SELECT 1 FROM courses WHERE title = ?", (c[0],)).fetchone():
                 continue
-            cur.execute("INSERT INTO courses (title, audience, description, topics, icon, category, sort_order) VALUES (?,?,?,?,?,?,?)",
-                        (*c, i))
-    fresh_ws = cur.execute("SELECT COUNT(*) FROM workshops").fetchone()[0] == 0
+            db.execute("INSERT INTO courses (title, audience, description, topics, icon, category, sort_order) VALUES (?,?,?,?,?,?,?)",
+                       (*c, i))
+    fresh_ws = db.execute("SELECT COUNT(*) FROM workshops").fetchone()[0] == 0
     if fresh_ws or migrated:
         for i, w in enumerate(SEED_WORKSHOPS):
-            if cur.execute("SELECT 1 FROM workshops WHERE title = ?", (w[0],)).fetchone():
+            if db.execute("SELECT 1 FROM workshops WHERE title = ?", (w[0],)).fetchone():
                 continue
-            cur.execute("INSERT INTO workshops (title, description, status, date_label, mode, tags, sort_order) VALUES (?,?,?,?,?,?,?)",
-                        (*w, i))
+            db.execute("INSERT INTO workshops (title, description, status, date_label, mode, tags, sort_order) VALUES (?,?,?,?,?,?,?)",
+                       (*w, i))
     db.commit()
     db.close()
-
-
-def _columns(cur, table):
-    return {r[1] for r in cur.execute(f"PRAGMA table_info({table})")}
 
 
 def get_settings(db):
@@ -645,9 +724,9 @@ def admin_course_create():
     if err:
         return bad(err)
     db = get_db()
-    cur = db.execute("INSERT INTO courses (title,audience,description,topics,icon,category,sort_order,published) VALUES (?,?,?,?,?,?,?,?)", p)
+    new_id = db.insert("INSERT INTO courses (title,audience,description,topics,icon,category,sort_order,published) VALUES (?,?,?,?,?,?,?,?)", p)
     db.commit()
-    return jsonify({"ok": True, "id": cur.lastrowid}), 201
+    return jsonify({"ok": True, "id": new_id}), 201
 
 
 @app.put("/api/admin/courses/<int:cid>")
@@ -702,9 +781,9 @@ def admin_workshop_create():
     if err:
         return bad(err)
     db = get_db()
-    cur = db.execute("INSERT INTO workshops (title,description,status,date_label,mode,tags,sort_order,published) VALUES (?,?,?,?,?,?,?,?)", p)
+    new_id = db.insert("INSERT INTO workshops (title,description,status,date_label,mode,tags,sort_order,published) VALUES (?,?,?,?,?,?,?,?)", p)
     db.commit()
-    return jsonify({"ok": True, "id": cur.lastrowid}), 201
+    return jsonify({"ok": True, "id": new_id}), 201
 
 
 @app.put("/api/admin/workshops/<int:wid>")
