@@ -1,0 +1,2 @@
+-r requirements.txt
+mongomock>=4.1   # in-memory MongoDB for local testing (RBQA_DEV=1)

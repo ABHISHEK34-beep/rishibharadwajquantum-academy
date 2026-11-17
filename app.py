@@ -1,9 +1,9 @@
 """
 Rishi Bharadwaj Quantum Academy (RBQA) - backend
-Flask + Postgres (DATABASE_URL) or SQLite (local). Serves the public site,
-a JSON API and an admin panel.
+Flask + MongoDB. Serves the public site, a JSON API and an admin panel.
 
-Run:  python app.py      ->  http://localhost:5000
+Run (local test):  RBQA_DEV=1 python app.py   ->  http://localhost:5000
+Production: set MONGODB_URI (e.g. a MongoDB Atlas connection string).
 Admin: http://localhost:5000/admin
 """
 import csv
@@ -11,20 +11,21 @@ import io
 import os
 import re
 import secrets
-import sqlite3
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import (Flask, Response, g, jsonify, render_template, request,
+from flask import (Flask, Response, jsonify, render_template, request,
                    session)
+from pymongo import MongoClient, ReturnDocument
+from pymongo.errors import DuplicateKeyError, PyMongoError
 from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.environ.get("RBQA_DB", os.path.join(BASE_DIR, "rbqa.db"))
-# Production: set DATABASE_URL to a Postgres URL so data survives restarts/redeploys.
-# Local development: leave it unset and a SQLite file (DB_PATH) is used.
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
-USE_PG = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+# MongoDB connection string, e.g. mongodb+srv://user:pass@cluster0.xxxx.mongodb.net/rbqa
+MONGODB_URI = os.environ.get("MONGODB_URI", "").strip()
+MONGODB_DB = os.environ.get("MONGODB_DB", "rbqa")   # used when the URI names no database
+# RBQA_DEV=1 allows a throw-away in-memory database for local testing (needs mongomock).
+DEV_MODE = os.environ.get("RBQA_DEV", "") in ("1", "true", "yes")
 SECRET_FILE = os.path.join(BASE_DIR, ".secret_key")
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -52,64 +53,6 @@ app.config.update(
 )
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-# --------------------------------------------------------------------------
-# Database
-# --------------------------------------------------------------------------
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS admin (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    username TEXT NOT NULL,
-    password_hash TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS courses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    audience TEXT NOT NULL DEFAULT '',
-    description TEXT NOT NULL DEFAULT '',
-    topics TEXT NOT NULL DEFAULT '',          -- newline separated
-    icon TEXT NOT NULL DEFAULT 'fa-atom',
-    category TEXT NOT NULL DEFAULT 'quantum', -- school / neet-jee / practical / quantum / rf
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    published INTEGER NOT NULL DEFAULT 1
-);
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS workshops (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'Upcoming',  -- Upcoming / Planning / Completed
-    date_label TEXT NOT NULL DEFAULT 'TBA',
-    mode TEXT NOT NULL DEFAULT 'Online',
-    tags TEXT NOT NULL DEFAULT '',            -- comma separated
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    published INTEGER NOT NULL DEFAULT 1
-);
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    phone TEXT NOT NULL DEFAULT '',
-    interest TEXT NOT NULL DEFAULT '',
-    class_course TEXT NOT NULL DEFAULT '',
-    learning_mode TEXT NOT NULL DEFAULT '',
-    message TEXT NOT NULL,
-    is_read INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS registrations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    workshop_id INTEGER NOT NULL REFERENCES workshops(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    phone TEXT NOT NULL DEFAULT '',
-    note TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL
-);
-"""
 
 # Course categories (order = order shown on the website).  (key, label, icon)
 CATEGORIES = [
@@ -175,157 +118,114 @@ DEFAULT_SETTINGS = {"whatsapp": "919795925796", "email": "rishibharadwajquantuma
 LEARNING_MODES = ("", "Online", "Offline", "Either")
 
 
-class Row:
-    """Row that works like sqlite3.Row on both backends: row[0], row["name"],
-    iteration over values, keys() and dict(row)."""
-    __slots__ = ("_names", "_values")
-
-    def __init__(self, names, values):
-        self._names, self._values = names, tuple(values)
-
-    def __getitem__(self, k):
-        if isinstance(k, str):
-            try:
-                return self._values[self._names.index(k)]
-            except ValueError:
-                raise KeyError(k) from None
-        return self._values[k]
-
-    def keys(self):
-        return list(self._names)
-
-    def __iter__(self):
-        return iter(self._values)
-
-    def __len__(self):
-        return len(self._values)
-
-
-def _pg_row_factory(cursor):
-    names = [c.name for c in cursor.description] if cursor.description else []
-    return lambda values: Row(names, values)
-
-
-class Database:
-    """Thin wrapper so the app code runs unchanged on SQLite (local) and
-    Postgres (production, via DATABASE_URL)."""
-
-    def __init__(self):
-        if USE_PG:
-            import psycopg
-            # prepare_threshold=None keeps it compatible with pooled (pgbouncer) URLs
-            self.conn = psycopg.connect(DATABASE_URL, row_factory=_pg_row_factory,
-                                        connect_timeout=15, prepare_threshold=None)
-        else:
-            self.conn = sqlite3.connect(DB_PATH)
-            self.conn.row_factory = sqlite3.Row
-            self.conn.execute("PRAGMA foreign_keys = ON")
-
-    def execute(self, sql, params=()):
-        if USE_PG:
-            cur = self.conn.cursor()
-            cur.execute(sql.replace("?", "%s"), tuple(params) or None)
-            return cur
-        return self.conn.execute(sql, params)
-
-    def insert(self, sql, params):
-        """INSERT and return the new row id."""
-        if USE_PG:
-            return self.execute(sql + " RETURNING id", params).fetchone()["id"]
-        return self.conn.execute(sql, params).lastrowid
-
-    def script(self, sql):
-        if USE_PG:
-            self.conn.cursor().execute(sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY"))
-        else:
-            self.conn.executescript(sql)
-
-    def columns(self, table):
-        if USE_PG:
-            rows = self.execute("SELECT column_name FROM information_schema.columns WHERE table_name = ?", (table,))
-            return {r[0] for r in rows}
-        return {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
-
-    def commit(self):
-        self.conn.commit()
-
-    def close(self):
-        self.conn.close()
+# --------------------------------------------------------------------------
+# Database (MongoDB)
+# --------------------------------------------------------------------------
+# Collections: admin, courses, workshops, registrations, messages, settings,
+# counters, meta.  Courses / workshops / messages / registrations use small
+# integer ids (handed out by the `counters` collection) so the JSON the website
+# and admin panel receive is the same as before.
+_client = None
 
 
 def get_db():
-    if "db" not in g:
-        g.db = Database()
-    return g.db
+    """Return the MongoDB database (one shared, thread-safe client)."""
+    global _client
+    if _client is None:
+        if MONGODB_URI:
+            _client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=8000, appname="rbqa")
+        elif DEV_MODE:
+            import mongomock
+            print("\n  [dev] MONGODB_URI not set - using a temporary IN-MEMORY database."
+                  "\n        Everything is lost when the app stops.\n")
+            _client = mongomock.MongoClient()
+        else:
+            raise RuntimeError(
+                "MONGODB_URI is not set. Create a MongoDB Atlas database and set MONGODB_URI "
+                "to its connection string (see README). For local testing only, set RBQA_DEV=1.")
+    return _client.get_default_database(default=MONGODB_DB)
 
 
-@app.teardown_appcontext
-def close_db(_exc):
-    db = g.pop("db", None)
-    if db is not None:
-        db.close()
+def next_id(db, name):
+    """Atomic auto-increment id for a collection."""
+    for _ in range(5):
+        try:
+            doc = db.counters.find_one_and_update(
+                {"_id": name}, {"$inc": {"seq": 1}}, upsert=True,
+                return_document=ReturnDocument.AFTER)
+            return doc["seq"]
+        except DuplicateKeyError:      # two first-ever callers raced on the upsert
+            continue
+    raise RuntimeError("Could not allocate an id.")
 
 
 def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def init_db():
-    db = Database()
-    if USE_PG:
-        # several gunicorn workers start at once: let one of them set up at a time
-        db.execute("SELECT pg_advisory_xact_lock(727272)")
-    db.script(SCHEMA)
+def out(doc, **extra):
+    """Mongo document -> JSON dict with an integer `id` (internal fields hidden)."""
+    d = {k: v for k, v in doc.items() if k not in ("_id", "email_lower")}
+    d["id"] = doc["_id"]
+    d.update(extra)
+    return d
 
-    if db.execute("SELECT COUNT(*) FROM admin").fetchone()[0] == 0:
-        username = os.environ.get("RBQA_ADMIN_USER", "admin")
-        password = os.environ.get("RBQA_ADMIN_PASS")
-        generated = False
-        if not password:
-            password = "admin123"
-            generated = True
-        db.execute("INSERT INTO admin (id, username, password_hash) VALUES (1, ?, ?)",
-                   (username, generate_password_hash(password)))
+
+def init_db():
+    try:
+        db = get_db()
+        db.command("ping")
+    except PyMongoError as exc:
+        raise RuntimeError(
+            "Cannot connect to MongoDB. Check MONGODB_URI (user, password, host) and, on "
+            "MongoDB Atlas, that Network Access allows this server (e.g. 0.0.0.0/0).") from exc
+
+    # one registration per email per workshop (case-insensitive)
+    db.registrations.create_index([("workshop_id", 1), ("email_lower", 1)], unique=True)
+
+    # admin account (created once; _id uniqueness makes this safe with several workers)
+    username = os.environ.get("RBQA_ADMIN_USER", "admin")
+    password = os.environ.get("RBQA_ADMIN_PASS")
+    generated = not password
+    password = password or "admin123"
+    try:
+        db.admin.insert_one({"_id": 1, "username": username,
+                             "password_hash": generate_password_hash(password)})
         print(f"\n  Admin account created -> username: {username}  password: {password}")
         if generated:
             print("  (default password - change it from the admin panel after logging in)\n")
-
-    # --- migrate databases created before categories / new form fields existed
-    migrated = False
-    if "category" not in db.columns("courses"):
-        db.execute("ALTER TABLE courses ADD COLUMN category TEXT NOT NULL DEFAULT 'quantum'")
-        db.execute("UPDATE courses SET category='rf' WHERE title='Intro to RF and Microwave Technologies'")
-        migrated = True
-    for col in ("class_course", "learning_mode"):
-        if col not in db.columns("messages"):
-            db.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    except DuplicateKeyError:
+        pass
 
     for k, v in DEFAULT_SETTINGS.items():
-        db.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING", (k, v))
+        try:
+            db.settings.update_one({"_id": k}, {"$setOnInsert": {"value": v}}, upsert=True)
+        except DuplicateKeyError:
+            pass
 
-    # Seed on a fresh DB; on a migrated DB only add the new rows that are missing
-    # (never re-adds things the admin deleted on later restarts).
-    fresh_courses = db.execute("SELECT COUNT(*) FROM courses").fetchone()[0] == 0
-    if fresh_courses or migrated:
-        for i, c in enumerate(SEED_COURSES):
-            if db.execute("SELECT 1 FROM courses WHERE title = ?", (c[0],)).fetchone():
-                continue
-            db.execute("INSERT INTO courses (title, audience, description, topics, icon, category, sort_order) VALUES (?,?,?,?,?,?,?)",
-                       (*c, i))
-    fresh_ws = db.execute("SELECT COUNT(*) FROM workshops").fetchone()[0] == 0
-    if fresh_ws or migrated:
-        for i, w in enumerate(SEED_WORKSHOPS):
-            if db.execute("SELECT 1 FROM workshops WHERE title = ?", (w[0],)).fetchone():
-                continue
-            db.execute("INSERT INTO workshops (title, description, status, date_label, mode, tags, sort_order) VALUES (?,?,?,?,?,?,?)",
-                       (*w, i))
-    db.commit()
-    db.close()
+    # Seed the starter courses/workshops exactly once, even if several workers start together.
+    # (Later deletions in the admin panel are never undone.)
+    try:
+        first = db.meta.find_one_and_update(
+            {"_id": "seeded"}, {"$setOnInsert": {"at": now_iso()}}, upsert=True) is None
+    except DuplicateKeyError:
+        first = False
+    if first:
+        for i, (title, audience, description, topics, icon, category) in enumerate(SEED_COURSES):
+            db.courses.insert_one({
+                "_id": next_id(db, "courses"), "title": title, "audience": audience,
+                "description": description, "topics": topics, "icon": icon,
+                "category": category, "sort_order": i, "published": True})
+        for i, (title, description, status, date_label, mode, tags) in enumerate(SEED_WORKSHOPS):
+            db.workshops.insert_one({
+                "_id": next_id(db, "workshops"), "title": title, "description": description,
+                "status": status, "date_label": date_label, "mode": mode, "tags": tags,
+                "sort_order": i, "published": True})
 
 
 def get_settings(db):
     s = dict(DEFAULT_SETTINGS)
-    s.update({r["key"]: r["value"] for r in db.execute("SELECT key, value FROM settings")})
+    s.update({r["_id"]: r["value"] for r in db.settings.find()})
     return s
 
 
@@ -351,7 +251,7 @@ def admin_required(fn):
 
 def course_row(r):
     return {
-        "id": r["id"], "title": r["title"], "audience": r["audience"],
+        "id": r["_id"], "title": r["title"], "audience": r["audience"],
         "description": r["description"],
         "topics": [t for t in r["topics"].split("\n") if t.strip()],
         "topics_text": r["topics"], "icon": r["icon"], "category": r["category"],
@@ -361,7 +261,7 @@ def course_row(r):
 
 def workshop_row(r):
     return {
-        "id": r["id"], "title": r["title"], "description": r["description"],
+        "id": r["_id"], "title": r["title"], "description": r["description"],
         "status": r["status"], "date_label": r["date_label"], "mode": r["mode"],
         "tags": [t.strip() for t in r["tags"].split(",") if t.strip()],
         "tags_text": r["tags"], "sort_order": r["sort_order"],
@@ -400,7 +300,11 @@ def admin_page():
 
 @app.get("/api/health")
 def health():
-    return jsonify({"ok": True})
+    try:
+        get_db().command("ping")
+    except Exception:                      # any DB failure -> report, don't crash
+        return jsonify({"ok": False, "db": "unreachable"}), 503
+    return jsonify({"ok": True, "db": "ok"})
 
 
 # ---- Legal pages (draft wording - have the academy owner / a lawyer review it)
@@ -469,15 +373,13 @@ def public_config():
 # --------------------------------------------------------------------------
 @app.get("/api/courses")
 def public_courses():
-    rows = get_db().execute(
-        "SELECT * FROM courses WHERE published = 1 ORDER BY sort_order, id").fetchall()
+    rows = get_db().courses.find({"published": True}).sort([("sort_order", 1), ("_id", 1)])
     return jsonify([course_row(r) for r in rows])
 
 
 @app.get("/api/workshops")
 def public_workshops():
-    rows = get_db().execute(
-        "SELECT * FROM workshops WHERE published = 1 ORDER BY sort_order, id").fetchall()
+    rows = get_db().workshops.find({"published": True}).sort([("sort_order", 1), ("_id", 1)])
     return jsonify([workshop_row(r) for r in rows])
 
 
@@ -501,9 +403,10 @@ def contact():
     if not EMAIL_RE.match(email):
         return bad("Please enter a valid email address.")
     db = get_db()
-    db.execute("INSERT INTO messages (name,email,phone,interest,class_course,learning_mode,message,created_at) VALUES (?,?,?,?,?,?,?,?)",
-               (name, email, phone, interest, class_course, learning_mode, message, now_iso()))
-    db.commit()
+    db.messages.insert_one({
+        "_id": next_id(db, "messages"), "name": name, "email": email, "phone": phone,
+        "interest": interest, "class_course": class_course, "learning_mode": learning_mode,
+        "message": message, "is_read": False, "created_at": now_iso()})
     return jsonify({"ok": True, "message": ok_msg})
 
 
@@ -512,7 +415,7 @@ def register(wid):
     if rate_limited():
         return bad("Too many submissions. Please try again later.", 429)
     db = get_db()
-    ws = db.execute("SELECT * FROM workshops WHERE id = ? AND published = 1", (wid,)).fetchone()
+    ws = db.workshops.find_one({"_id": wid, "published": True})
     if not ws:
         return bad("Workshop not found.", 404)
     if ws["status"] == "Completed":
@@ -526,13 +429,13 @@ def register(wid):
         return bad("Name is required.")
     if not EMAIL_RE.match(email):
         return bad("Please enter a valid email address.")
-    dup = db.execute("SELECT 1 FROM registrations WHERE workshop_id=? AND lower(email)=lower(?)",
-                     (wid, email)).fetchone()
-    if dup:
+    try:
+        db.registrations.insert_one({
+            "_id": next_id(db, "registrations"), "workshop_id": wid, "name": name,
+            "email": email, "email_lower": email.lower(), "phone": phone, "note": note,
+            "created_at": now_iso()})
+    except DuplicateKeyError:
         return bad("This email is already registered for this workshop.", 409)
-    db.execute("INSERT INTO registrations (workshop_id,name,email,phone,note,created_at) VALUES (?,?,?,?,?,?)",
-               (wid, name, email, phone, note, now_iso()))
-    db.commit()
     return jsonify({"ok": True, "message": f"You're on the list for \"{ws['title']}\". We'll email you the details."})
 
 
@@ -544,7 +447,7 @@ def admin_login():
     if rate_limited(limit=10, window=300):
         return bad("Too many attempts. Wait a few minutes.", 429)
     d = request.get_json(silent=True) or {}
-    row = get_db().execute("SELECT * FROM admin WHERE id = 1").fetchone()
+    row = get_db().admin.find_one({"_id": 1})
     if (row and d.get("username") == row["username"]
             and check_password_hash(row["password_hash"], d.get("password") or "")):
         session.clear()
@@ -563,7 +466,7 @@ def admin_logout():
 def admin_me():
     if not session.get("admin"):
         return jsonify({"ok": False}), 401
-    row = get_db().execute("SELECT username FROM admin WHERE id = 1").fetchone()
+    row = get_db().admin.find_one({"_id": 1})
     return jsonify({"ok": True, "username": row["username"]})
 
 
@@ -572,14 +475,13 @@ def admin_me():
 def admin_password():
     d = request.get_json(silent=True) or {}
     db = get_db()
-    row = db.execute("SELECT * FROM admin WHERE id = 1").fetchone()
+    row = db.admin.find_one({"_id": 1})
     if not check_password_hash(row["password_hash"], d.get("current") or ""):
         return bad("Current password is incorrect.", 403)
     new = d.get("new") or ""
     if len(new) < 8:
         return bad("New password must be at least 8 characters.")
-    db.execute("UPDATE admin SET password_hash = ? WHERE id = 1", (generate_password_hash(new),))
-    db.commit()
+    db.admin.update_one({"_id": 1}, {"$set": {"password_hash": generate_password_hash(new)}})
     return jsonify({"ok": True})
 
 
@@ -587,13 +489,12 @@ def admin_password():
 @admin_required
 def admin_stats():
     db = get_db()
-    q = lambda sql: db.execute(sql).fetchone()[0]
     return jsonify({
-        "messages": q("SELECT COUNT(*) FROM messages"),
-        "unread": q("SELECT COUNT(*) FROM messages WHERE is_read = 0"),
-        "registrations": q("SELECT COUNT(*) FROM registrations"),
-        "courses": q("SELECT COUNT(*) FROM courses"),
-        "workshops": q("SELECT COUNT(*) FROM workshops"),
+        "messages": db.messages.count_documents({}),
+        "unread": db.messages.count_documents({"is_read": False}),
+        "registrations": db.registrations.count_documents({}),
+        "courses": db.courses.count_documents({}),
+        "workshops": db.workshops.count_documents({}),
     })
 
 
@@ -601,45 +502,43 @@ def admin_stats():
 @app.get("/api/admin/messages")
 @admin_required
 def admin_messages():
-    rows = get_db().execute("SELECT * FROM messages ORDER BY id DESC").fetchall()
-    return jsonify([dict(r) | {"is_read": bool(r["is_read"])} for r in rows])
+    rows = get_db().messages.find().sort("_id", -1)
+    return jsonify([out(r, is_read=bool(r["is_read"])) for r in rows])
 
 
 @app.patch("/api/admin/messages/<int:mid>")
 @admin_required
 def admin_message_update(mid):
     d = request.get_json(silent=True) or {}
-    db = get_db()
-    db.execute("UPDATE messages SET is_read = ? WHERE id = ?", (1 if d.get("is_read") else 0, mid))
-    db.commit()
+    get_db().messages.update_one({"_id": mid}, {"$set": {"is_read": bool(d.get("is_read"))}})
     return jsonify({"ok": True})
 
 
 @app.delete("/api/admin/messages/<int:mid>")
 @admin_required
 def admin_message_delete(mid):
-    db = get_db()
-    db.execute("DELETE FROM messages WHERE id = ?", (mid,))
-    db.commit()
+    get_db().messages.delete_one({"_id": mid})
     return jsonify({"ok": True})
 
 
 # ---- registrations
+def registrations_with_titles(db):
+    """Registrations (newest first) paired with their workshop title."""
+    titles = {w["_id"]: w["title"] for w in db.workshops.find({}, {"title": 1})}
+    return [(r, titles[r["workshop_id"]]) for r in db.registrations.find().sort("_id", -1)
+            if r["workshop_id"] in titles]
+
+
 @app.get("/api/admin/registrations")
 @admin_required
 def admin_registrations():
-    rows = get_db().execute("""
-        SELECT r.*, w.title AS workshop_title FROM registrations r
-        JOIN workshops w ON w.id = r.workshop_id ORDER BY r.id DESC""").fetchall()
-    return jsonify([dict(r) for r in rows])
+    return jsonify([out(r, workshop_title=title) for r, title in registrations_with_titles(get_db())])
 
 
 @app.delete("/api/admin/registrations/<int:rid>")
 @admin_required
 def admin_registration_delete(rid):
-    db = get_db()
-    db.execute("DELETE FROM registrations WHERE id = ?", (rid,))
-    db.commit()
+    get_db().registrations.delete_one({"_id": rid})
     return jsonify({"ok": True})
 
 
@@ -659,12 +558,13 @@ def csv_response(filename, header, rows):
 def admin_export(kind):
     db = get_db()
     if kind == "messages":
-        rows = db.execute("SELECT created_at,name,email,phone,interest,class_course,learning_mode,message FROM messages ORDER BY id DESC").fetchall()
+        rows = [[m["created_at"], m["name"], m["email"], m["phone"], m["interest"],
+                 m["class_course"], m["learning_mode"], m["message"]]
+                for m in db.messages.find().sort("_id", -1)]
         return csv_response("messages.csv", ["Received (UTC)", "Name", "Email", "Phone", "Interest", "Class / Course", "Mode", "Message"], rows)
     if kind == "registrations":
-        rows = db.execute("""SELECT r.created_at, w.title, r.name, r.email, r.phone, r.note
-                             FROM registrations r JOIN workshops w ON w.id = r.workshop_id
-                             ORDER BY r.id DESC""").fetchall()
+        rows = [[r["created_at"], title, r["name"], r["email"], r["phone"], r["note"]]
+                for r, title in registrations_with_titles(db)]
         return csv_response("registrations.csv", ["Registered (UTC)", "Workshop", "Name", "Email", "Phone", "Note"], rows)
     return bad("Unknown export.", 404)
 
@@ -688,8 +588,7 @@ def admin_settings_update():
         return bad("Please enter a valid email address.")
     db = get_db()
     for k, v in (("whatsapp", whatsapp), ("email", email), ("phone", phone)):
-        db.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (k, v))
-    db.commit()
+        db.settings.update_one({"_id": k}, {"$set": {"value": v}}, upsert=True)
     return jsonify({"ok": True})
 
 
@@ -705,15 +604,17 @@ def course_payload(d):
     category = clean(d.get("category"), 20)
     if category not in CATEGORY_KEYS:
         category = "quantum"
-    return (title, clean(d.get("audience"), 200), clean(d.get("description"), 2000),
-            clean(d.get("topics_text"), 2000), clean(d.get("icon"), 40) or "fa-atom",
-            category, order, 1 if d.get("published", True) else 0), None
+    return {"title": title, "audience": clean(d.get("audience"), 200),
+            "description": clean(d.get("description"), 2000),
+            "topics": clean(d.get("topics_text"), 2000),
+            "icon": clean(d.get("icon"), 40) or "fa-atom", "category": category,
+            "sort_order": order, "published": bool(d.get("published", True))}, None
 
 
 @app.get("/api/admin/courses")
 @admin_required
 def admin_courses():
-    rows = get_db().execute("SELECT * FROM courses ORDER BY sort_order, id").fetchall()
+    rows = get_db().courses.find().sort([("sort_order", 1), ("_id", 1)])
     return jsonify([course_row(r) for r in rows])
 
 
@@ -724,8 +625,8 @@ def admin_course_create():
     if err:
         return bad(err)
     db = get_db()
-    new_id = db.insert("INSERT INTO courses (title,audience,description,topics,icon,category,sort_order,published) VALUES (?,?,?,?,?,?,?,?)", p)
-    db.commit()
+    new_id = next_id(db, "courses")
+    db.courses.insert_one({"_id": new_id, **p})
     return jsonify({"ok": True, "id": new_id}), 201
 
 
@@ -736,17 +637,14 @@ def admin_course_update(cid):
     if err:
         return bad(err)
     db = get_db()
-    cur = db.execute("UPDATE courses SET title=?,audience=?,description=?,topics=?,icon=?,category=?,sort_order=?,published=? WHERE id=?", (*p, cid))
-    db.commit()
-    return jsonify({"ok": True}) if cur.rowcount else bad("Not found.", 404)
+    res = db.courses.update_one({"_id": cid}, {"$set": p})
+    return jsonify({"ok": True}) if res.matched_count else bad("Not found.", 404)
 
 
 @app.delete("/api/admin/courses/<int:cid>")
 @admin_required
 def admin_course_delete(cid):
-    db = get_db()
-    db.execute("DELETE FROM courses WHERE id = ?", (cid,))
-    db.commit()
+    get_db().courses.delete_one({"_id": cid})
     return jsonify({"ok": True})
 
 
@@ -762,15 +660,16 @@ def workshop_payload(d):
         order = int(d.get("sort_order") or 0)
     except (TypeError, ValueError):
         order = 0
-    return (title, clean(d.get("description"), 2000), status,
-            clean(d.get("date_label"), 40) or "TBA", clean(d.get("mode"), 20) or "Online",
-            clean(d.get("tags_text"), 200), order, 1 if d.get("published", True) else 0), None
+    return {"title": title, "description": clean(d.get("description"), 2000), "status": status,
+            "date_label": clean(d.get("date_label"), 40) or "TBA",
+            "mode": clean(d.get("mode"), 20) or "Online", "tags": clean(d.get("tags_text"), 200),
+            "sort_order": order, "published": bool(d.get("published", True))}, None
 
 
 @app.get("/api/admin/workshops")
 @admin_required
 def admin_workshops():
-    rows = get_db().execute("SELECT * FROM workshops ORDER BY sort_order, id").fetchall()
+    rows = get_db().workshops.find().sort([("sort_order", 1), ("_id", 1)])
     return jsonify([workshop_row(r) for r in rows])
 
 
@@ -781,8 +680,8 @@ def admin_workshop_create():
     if err:
         return bad(err)
     db = get_db()
-    new_id = db.insert("INSERT INTO workshops (title,description,status,date_label,mode,tags,sort_order,published) VALUES (?,?,?,?,?,?,?,?)", p)
-    db.commit()
+    new_id = next_id(db, "workshops")
+    db.workshops.insert_one({"_id": new_id, **p})
     return jsonify({"ok": True, "id": new_id}), 201
 
 
@@ -793,17 +692,16 @@ def admin_workshop_update(wid):
     if err:
         return bad(err)
     db = get_db()
-    cur = db.execute("UPDATE workshops SET title=?,description=?,status=?,date_label=?,mode=?,tags=?,sort_order=?,published=? WHERE id=?", (*p, wid))
-    db.commit()
-    return jsonify({"ok": True}) if cur.rowcount else bad("Not found.", 404)
+    res = db.workshops.update_one({"_id": wid}, {"$set": p})
+    return jsonify({"ok": True}) if res.matched_count else bad("Not found.", 404)
 
 
 @app.delete("/api/admin/workshops/<int:wid>")
 @admin_required
 def admin_workshop_delete(wid):
     db = get_db()
-    db.execute("DELETE FROM workshops WHERE id = ?", (wid,))
-    db.commit()
+    db.workshops.delete_one({"_id": wid})
+    db.registrations.delete_many({"workshop_id": wid})      # registrations go with their workshop
     return jsonify({"ok": True})
 
 
